@@ -226,7 +226,7 @@ public class EclipseControl {
         if (cx == Float.NaN) {
             return;
         }
-        int mSliderColor = 0xFF33B5E5;
+        int mSliderColor = 0xFFED1212;
         Paint paint = new Paint();
         RectF rect = new RectF(cx - rx, cy - ry, cx + rx, cy + ry);
         paint.setAntiAlias(true);

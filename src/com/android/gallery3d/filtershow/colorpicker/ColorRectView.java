@@ -48,7 +48,7 @@ public class ColorRectView extends View implements ColorListener {
     private int mBgcolor = 0;
     private float mDotX = Float.NaN;
     private float mDotY;
-    private int mSliderColor = 0xFF33B5E5;
+    private int mSliderColor = 0xFFED1212;
     private float[] mHSVO = new float[4];
     private int[] mColors = new int[] {
             0xFFFF0000,// red
