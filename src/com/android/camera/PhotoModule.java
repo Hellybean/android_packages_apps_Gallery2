@@ -115,6 +115,7 @@ public class PhotoModule
     private static final int CAMERA_DISABLED = 12;
     private static final int CAPTURE_ANIMATION_DONE = 13;
     private static final int SET_PHOTO_UI_PARAMS = 15;
+    private static final int UPDATE_ASD_ICON = 16;
 
     // The subset of parameters we need to update in setCameraParameters().
     private static final int UPDATE_PARAM_INITIALIZE = 1;
@@ -265,6 +266,8 @@ public class PhotoModule
     private boolean mBurstShotInProgress = false;
 
     private boolean mQuickCapture;
+
+    private boolean mSceneDetection = false;
 
     CameraStartUpThread mCameraStartUpThread;
     ConditionVariable mStartPreviewPrerequisiteReady = new ConditionVariable();
@@ -422,6 +425,20 @@ public class PhotoModule
                     resizeForPreviewAspectRatio();
                     mUI.updateOnScreenIndicators(mParameters, mPreferenceGroup,
                         mPreferences);
+                    break;
+                }
+                case UPDATE_ASD_ICON: {
+                    if (!mSceneDetection) {
+                        mUI.updateSceneDetectionIcon(null);
+                        break;
+                    }
+                    if (mCameraState == IDLE) {
+                        mCameraDevice.refreshParameters();
+                        String scene = mCameraDevice.getParameters().get("asd-mode");
+                        Log.d(TAG, "detected scene=" + scene + " camstate=" +mCameraState);
+                        mUI.updateSceneDetectionIcon(scene);
+                    }
+                    mHandler.sendEmptyMessageDelayed(UPDATE_ASD_ICON, 2000);
                     break;
                 }
             }
@@ -985,7 +1002,10 @@ public class PhotoModule
 
             mAutoFocusTime = System.currentTimeMillis() - mFocusStartTime;
             Log.v(TAG, "mAutoFocusTime = " + mAutoFocusTime + "ms");
-            setCameraState(IDLE);
+            //don't reset the camera state while capture is in progress
+            //otherwise, it might result in another takepicture
+            if(SNAPSHOT_IN_PROGRESS != mCameraState)
+                setCameraState(IDLE);
             mFocusManager.onAutoFocus(focused, mUI.isShutterPressed());
         }
     }
@@ -1150,22 +1170,29 @@ public class PhotoModule
     }
 
     private void updateSceneMode() {
-        // If scene mode is set, we cannot set flash mode, white balance, and
-        // focus mode, instead, we read it from driver
-        if (!Parameters.SCENE_MODE_AUTO.equals(mSceneMode)) {
-            overrideCameraSettings(mParameters.getFlashMode(),
-                    mParameters.getWhiteBalance(), mParameters.getFocusMode());
-        } else {
-            overrideCameraSettings(null, null, null);
+        synchronized (mCameraDevice) {
+            updateSceneDetection();
+            // If scene mode or slow shutter is set, we cannot set flash mode, white balance, and
+            // focus mode, instead, we read it from driver
+            if (!Parameters.SCENE_MODE_AUTO.equals(mSceneMode) ||
+                CameraSettings.isSlowShutterEnabled(mParameters)) {
+                overrideCameraSettings(mParameters.getFlashMode(),
+                        mParameters.getWhiteBalance(), mParameters.getFocusMode(),
+                        mParameters.getColorEffect());
+            } else {
+                overrideCameraSettings(null, null, null, null);
+            }
         }
     }
 
     private void overrideCameraSettings(final String flashMode,
-            final String whiteBalance, final String focusMode) {
+            final String whiteBalance, final String focusMode,
+            final String colorEffect) {
         mUI.overrideSettings(
                 CameraSettings.KEY_FLASH_MODE, flashMode,
                 CameraSettings.KEY_WHITE_BALANCE, whiteBalance,
-                CameraSettings.KEY_FOCUS_MODE, focusMode);
+                CameraSettings.KEY_FOCUS_MODE, focusMode,
+                CameraSettings.KEY_COLOR_EFFECT, colorEffect);
         if (Util.needSamsungHDRFormat()){
             if (mSceneMode == Util.SCENE_MODE_HDR) {
                 mUI.overrideSettings(CameraSettings.KEY_EXPOSURE,
@@ -1960,20 +1987,33 @@ public class PhotoModule
         }
         Log.v(TAG, "Preview size is " + optimalSize.width + "x" + optimalSize.height);
 
+        // Beauty mode
+        CameraSettings.setBeautyMode(mParameters, mPreferences.getString(CameraSettings.KEY_BEAUTY_MODE,
+                mActivity.getString(R.string.pref_camera_beauty_mode_default)).equals("on"));
+
+        // Slow shutter
+        CameraSettings.setSlowShutter(mParameters, mPreferences.getString(CameraSettings.KEY_SLOW_SHUTTER,
+                mActivity.getString(R.string.pref_camera_slow_shutter_default)));
+
         // Since changing scene mode may change supported values, set scene mode
         // first. HDR is a scene mode. To promote it in UI, it is stored in a
         // separate preference.
         String hdr = mPreferences.getString(CameraSettings.KEY_CAMERA_HDR,
                 mActivity.getString(R.string.pref_camera_hdr_default));
+        String asd = mPreferences.getString(CameraSettings.KEY_ASD,
+                mActivity.getString(R.string.pref_camera_asd_default));
         if (mActivity.getString(R.string.setting_on_value).equals(hdr)) {
             mSceneMode = Util.SCENE_MODE_HDR;
+        } else if (mActivity.getString(R.string.setting_on_value).equals(asd)) {
+            mSceneMode = Util.SCENE_MODE_ASD;
         } else {
             mSceneMode = mPreferences.getString(
                 CameraSettings.KEY_SCENE_MODE,
                 mActivity.getString(R.string.pref_camera_scenemode_default));
         }
         if (Util.isSupported(mSceneMode, mParameters.getSupportedSceneModes())) {
-            if (!mParameters.getSceneMode().equals(mSceneMode)) {
+            if (!mParameters.getSceneMode().equals(mSceneMode) ||
+                CameraSettings.isSlowShutterEnabled(mParameters)) {
                 mParameters.setSceneMode(mSceneMode);
 
                 // Setting scene mode will change the settings of flash mode,
@@ -2020,14 +2060,6 @@ public class PhotoModule
             mParameters.setColorEffect(colorEffect);
         }
 
-        // Beauty mode
-        CameraSettings.setBeautyMode(mParameters, mPreferences.getString(CameraSettings.KEY_BEAUTY_MODE,
-                mActivity.getString(R.string.pref_camera_beauty_mode_default)).equals("on"));
-
-        // Slow shutter
-        CameraSettings.setSlowShutter(mParameters, mPreferences.getString(CameraSettings.KEY_SLOW_SHUTTER,
-                mActivity.getString(R.string.pref_camera_slow_shutter_default)));
-
         // Set exposure compensation
         int value = CameraSettings.readExposure(mPreferences);
         int max = mParameters.getMaxExposureCompensation();
@@ -2040,7 +2072,8 @@ public class PhotoModule
             Log.w(TAG, "invalid exposure range: " + value);
         }
 
-        if (Parameters.SCENE_MODE_AUTO.equals(mSceneMode)) {
+        if (Parameters.SCENE_MODE_AUTO.equals(mSceneMode) &&
+            !CameraSettings.isSlowShutterEnabled(mParameters)) {
             // Set flash mode.
             String flashMode = mPreferences.getString(
                     CameraSettings.KEY_FLASH_MODE,
@@ -2101,23 +2134,25 @@ public class PhotoModule
     // the subsets actually need updating. The PREFERENCE set needs extra
     // locking because the preference can be changed from GLThread as well.
     private void setCameraParameters(int updateSet) {
-        if ((updateSet & UPDATE_PARAM_INITIALIZE) != 0) {
-            updateCameraParametersInitialize();
+        synchronized (mCameraDevice) {
+            if ((updateSet & UPDATE_PARAM_INITIALIZE) != 0) {
+                updateCameraParametersInitialize();
 
-            // Set camera mode
-            CameraSettings.setVideoMode(mParameters, false);
+                // Set camera mode
+                CameraSettings.setVideoMode(mParameters, false);
+            }
+
+            if ((updateSet & UPDATE_PARAM_ZOOM) != 0) {
+                updateCameraParametersZoom();
+            }
+
+            if ((updateSet & UPDATE_PARAM_PREFERENCE) != 0) {
+                updateCameraParametersPreference();
+            }
+
+            Util.dumpParameters(mParameters);
+            mCameraDevice.setParameters(mParameters);
         }
-
-        if ((updateSet & UPDATE_PARAM_ZOOM) != 0) {
-            updateCameraParametersZoom();
-        }
-
-        if ((updateSet & UPDATE_PARAM_PREFERENCE) != 0) {
-            updateCameraParametersPreference();
-        }
-
-        Util.dumpParameters(mParameters);
-        mCameraDevice.setParameters(mParameters);
     }
 
     // If the Camera is idle, update the parameters immediately, otherwise
@@ -2172,6 +2207,15 @@ public class PhotoModule
         if (myExtras != null) {
             mSaveUri = (Uri) myExtras.getParcelable(MediaStore.EXTRA_OUTPUT);
             mCropValue = myExtras.getString("crop");
+        }
+    }
+
+    private void updateSceneDetection() {
+        mSceneDetection = "on".equals(mPreferences.getString(CameraSettings.KEY_ASD, "off"));
+
+        Log.d(TAG, "updateSceneDetection : " + mSceneDetection);
+        if (mSceneDetection) {
+            mHandler.sendEmptyMessage(UPDATE_ASD_ICON);
         }
     }
 

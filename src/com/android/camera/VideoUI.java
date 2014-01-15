@@ -196,6 +196,10 @@ public class VideoUI implements SurfaceHolder.Callback, PieRenderer.PieListener,
         mVideoMenu.overrideSettings(keyvalues);
     }
 
+    public void enableItem(int resId, boolean enable) {
+        mVideoMenu.enableItem(resId, enable);
+    }
+
     public View getPreview() {
         return mPreviewFrameLayout;
     }
@@ -380,6 +384,12 @@ public class VideoUI implements SurfaceHolder.Callback, PieRenderer.PieListener,
 
     public void onPause() {
         mRootView.removeOnLayoutChangeListener(mLayoutListener);
+    }
+
+    public void enablePause(boolean enable) {
+        if (mPauseButton != null) {
+            mPauseButton.setEnabled(enable);
+        }
     }
 
     // PieListener
